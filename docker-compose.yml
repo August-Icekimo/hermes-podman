@@ -6,6 +6,7 @@ services:
     userns_mode: keep-id
     user: "1000:1000"
     command: gateway run
+    networks: [hermesnet]
     ports:
       - "8642:8642"
     volumes:
@@ -15,6 +16,8 @@ services:
       - PYTHONPATH=/opt/data/venv/lib/python3.13/site-packages
       - HOME=/opt/data
       - PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin
+      # Hermes reaches the broker by service name. NO Anthropic key here.
+      - BROKER_URL=http://task-broker:8777
 
   dashboard:
     image: docker.io/nousresearch/hermes-agent:latest
@@ -23,6 +26,7 @@ services:
     userns_mode: keep-id
     user: "1000:1000"
     command: dashboard --host 0.0.0.0 --insecure
+    networks: [hermesnet]
     ports:
       - "9119:9119"
     volumes:
@@ -31,3 +35,69 @@ services:
       - GATEWAY_HEALTH_URL=http://hermes-gateway:8642
     depends_on:
       - hermes
+
+  # --- delegated heavy-coding worker -------------------------------------
+  # Idles until the broker exec's `claude -p` into it. No ports exposed: it is
+  # never connected to, only exec'd into. Independent home (~/.claude-worker),
+  # never sees the host home beyond the per-task /work mount.
+  claude-worker:
+    build:
+      context: ./worker
+    image: localhost/claude-code-worker:latest
+    container_name: claude-code-worker
+    restart: unless-stopped
+    userns_mode: keep-id
+    user: "1000:1000"
+    command: sleep infinity
+    # Dedicated egress network: only Anthropic API + your git remote should be
+    # reachable. Enforce the actual allow-list at the host firewall / podman
+    # network level (see DEPLOY.md). Kept off hermesnet so it can't be reached
+    # laterally by Hermes; the broker reaches it via podman exec, not the network.
+    networks: [workernet]
+    volumes:
+      - /home/icekimo/.claude-worker:/opt/data:Z      # independent home + creds
+      - /home/icekimo/hermes-tasks:/work:Z            # the ONLY shared surface
+    environment:
+      - HOME=/opt/data
+      - PATH=/opt/data/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+      - GOPATH=/opt/data/go
+      - GOCACHE=/opt/data/.cache/go-build
+      # IMPORTANT: do NOT set ANTHROPIC_API_KEY here (silent-billing trap).
+      # Pre-6/15: put it in /home/icekimo/.claude-worker/.env instead.
+      # Post-6/15: use OAuth (claude auth login) — no key at all, uses the
+      # $20/mo Agent SDK credit.
+
+  # --- the single gate ----------------------------------------------------
+  # Only this container can `podman exec` into the worker. It holds the podman
+  # socket; Hermes never does. Enforces the task-type whitelist + budget caps.
+  task-broker:
+    build:
+      context: ./broker
+    image: localhost/task-broker:latest
+    container_name: task-broker
+    restart: unless-stopped
+    userns_mode: keep-id
+    user: "1000:1000"
+    command: uvicorn broker:app --host 0.0.0.0 --port 8777
+    # On hermesnet so Hermes can call it by name. NOT on workernet.
+    networks: [hermesnet]
+    volumes:
+      # Rootless podman user socket, mounted read-write so the broker can exec.
+      # Path on host is typically /run/user/1000/podman/podman.sock.
+      - /run/user/1000/podman/podman.sock:/run/podman/podman.sock:Z
+    environment:
+      - CONTAINER_HOST=unix:///run/podman/podman.sock
+      - WORKER_CONTAINER=claude-code-worker
+      - WORK_ROOT=/work
+      - CLAUDE_MODEL=sonnet
+      - CLAUDE_MAX_BUDGET_USD=0.50
+      - MONTHLY_SOFT_CAP_USD=18.0
+      - EXEC_TIMEOUT_S=600
+    depends_on:
+      - claude-worker
+
+networks:
+  hermesnet:
+    driver: bridge
+  workernet:
+    driver: bridge
