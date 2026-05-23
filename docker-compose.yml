@@ -1,0 +1,33 @@
+services:
+  hermes:
+    image: docker.io/nousresearch/hermes-agent:latest
+    container_name: hermes-gateway
+    restart: unless-stopped
+    userns_mode: keep-id
+    user: "1000:1000"
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - /home/icekimo/.hermes:/opt/data:Z
+    environment:
+      - HERMES_ALLOW_ROOT_GATEWAY=1
+      - PYTHONPATH=/opt/data/venv/lib/python3.13/site-packages
+      - HOME=/opt/data
+      - PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+  dashboard:
+    image: docker.io/nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    userns_mode: keep-id
+    user: "1000:1000"
+    command: dashboard --host 0.0.0.0 --insecure
+    ports:
+      - "9119:9119"
+    volumes:
+      - /home/icekimo/.hermes:/opt/data:Z
+    environment:
+      - GATEWAY_HEALTH_URL=http://hermes-gateway:8642
+    depends_on:
+      - hermes
