@@ -1,6 +1,8 @@
 services:
   hermes:
-    image: docker.io/nousresearch/hermes-agent:latest
+    build:
+      context: ./hermes
+    image: localhost/hermes-agent-sudoed:latest
     container_name: hermes-gateway
     restart: unless-stopped
     userns_mode: keep-id
@@ -20,7 +22,9 @@ services:
       - BROKER_URL=http://task-broker:8777
 
   dashboard:
-    image: docker.io/nousresearch/hermes-agent:latest
+    build:
+      context: ./hermes
+    image: localhost/hermes-agent-sudoed:latest
     container_name: hermes-dashboard
     restart: unless-stopped
     userns_mode: keep-id
