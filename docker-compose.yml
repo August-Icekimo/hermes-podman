@@ -11,8 +11,11 @@ services:
     networks: [hermesnet]
     ports:
       - "8642:8642"
+      - "8646:8646"
     volumes:
       - /home/icekimo/.hermes:/opt/data:Z
+    env_file:
+      - .env
     environment:
       - HERMES_ALLOW_ROOT_GATEWAY=1
       - PYTHONPATH=/opt/data/venv/lib/python3.13/site-packages
