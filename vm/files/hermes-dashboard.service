@@ -1,0 +1,31 @@
+[Unit]
+Description=Hermes Agent Dashboard (Web UI)
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+# 崩潰迴圈要能自己停下來：沒有這兩行，設定錯誤會讓它每 5 秒重啟一次直到天荒地老
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# 只綁 127.0.0.1 —— 這不是保守，是 Hermes 0.20+ 的硬性要求：
+# 非 loopback 綁定會啟動 auth gate，沒有註冊 auth provider 就直接拒絕啟動
+# （--insecure 在 0.20 已標為 DEPRECATED / NO-OP，不再能繞過）。
+# 從別台機器看 dashboard 請用 SSH 通道：
+#   ssh -N -L 9119:127.0.0.1:9119 hermes@<VM_IP>
+# 真的要對外綁，先設定認證再把 --host 改掉：
+#   config.yaml 的 dashboard.basic_auth.username + password_hash
+#   或 `hermes dashboard register`（Nous Portal OAuth）
+ExecStart=%h/.local/bin/hermes dashboard --host 127.0.0.1 --port 9119
+WorkingDirectory=%h
+Environment="HERMES_HOME=%h/.hermes"
+Environment="PATH=%h/.local/bin:%h/.hermes/bin:/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

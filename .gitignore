@@ -1,2 +1,11 @@
-worker/.env
+# 機密
 .env
+worker/.env
+legacy-podman/worker/.env
+
+# VM 佈署產物
+# （.gitignore 不支援行尾註解，說明一律寫在上一行）
+# 下載的 cloud image
+vm/.cache/
+# 產生的 cloud-init seed，user-data 內含 LINE 憑證明文
+vm/.build/
