@@ -9,3 +9,7 @@ legacy-podman/worker/.env
 vm/.cache/
 # 產生的 cloud-init seed，user-data 內含 LINE 憑證明文
 vm/.build/
+
+# 對接 secure-gateway 的交接文件。刻意不進版控：內含 VM 的 MAC、tailnet IP
+# 與子網域命名，而這個 repo 是 public。檔案本身留在 docs/ 供本機參考。
+docs/secure-gateway-handoff.md
