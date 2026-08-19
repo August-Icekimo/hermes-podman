@@ -1,120 +1,188 @@
-# hermes-podman
+# hermes-vm
 
-以 Podman Compose 無根（rootless）方式執行 [NousResearch Hermes Agent](https://hub.docker.com/r/nousresearch/hermes-agent)。
+在本機 KVM/libvirt 上，以**原生安裝**方式跑 [NousResearch Hermes Agent](https://hermes-agent.nousresearch.com/) 的佈署設定。
 
-## 服務
+> **這個專案原本是 Podman Compose 佈署**（見 [`legacy-podman/`](legacy-podman/)）。
+> 容器化的 Hermes 對 AI agent 綁手綁腳：agent 不能自由裝套件、沒有真正的 systemd、
+> `userns_mode: keep-id` 造成一連串權限問題、而且沒有「弄壞了回滾」的機制。
+> VM 把這些問題一次解決 —— 而且 Hermes 本來就有官方的原生安裝腳本與 systemd 整合，
+> 容器反而是繞路。
 
-| 服務 | 容器名稱 | 連接埠 | 說明 |
-|------|----------|--------|------|
-| `hermes` | `hermes-gateway` | `8642` | API 閘道 |
-| `dashboard` | `hermes-dashboard` | `9119` | 網頁管理介面 |
-| `task-broker` | `task-broker` | `8777` (內部) | 任務調度代理，為唯一的 Worker exec 閘道，負責審查任務與控制預算 |
-| `claude-worker` | `claude-code-worker` | - | 獨立的重型任務 Worker，預載 Claude Code，僅接受 Podman exec 呼叫 |
+## 為什麼是 VM 而不是容器
 
-- `hermes` 與 `dashboard` 服務均掛載 `~/.hermes` 至容器內的 `/opt/data`，作為持久化資料目錄。
-- `claude-worker` 掛載主機的 `~/.claude-worker` 作為獨立的家目錄與憑證儲存空間。
-- `claude-worker` 與 `task-broker` 共享 `~/hermes-tasks` 目錄作為專案工作區（容器內的 `/work`）。
-
-## Claude Code Worker 整合設計
-
-為了安全地處理重型程式碼編寫與測試任務，本專案新增了基於 Claude Code Worker 的代理授權架構。此設計實現了沙盒隔離與最小權限原則：
-
-```mermaid
-graph TD
-    subgraph Host ["主機 (Host)"]
-        HS[podman.sock]
-        HD1["~/.claude-worker<br>(憑證與設定)"]
-        HD2["~/hermes-tasks<br>(共享工作區)"]
-    end
-
-    subgraph HermesNet ["Hermes 內部網路 (hermesnet)"]
-        HG[hermes-gateway]
-        HD[hermes-dashboard]
-        TB[task-broker]
-    end
-
-    subgraph WorkerNet ["Worker 專用網路 (workernet)"]
-        CW[claude-code-worker]
-    end
-
-    HG -->|API 請求| TB
-    HD -->|監控| HG
-    TB -->|Podman Socket 控制| HS
-    HS -->|podman exec| CW
-    
-    CW -->|獨立掛載| HD1
-    CW -->|唯一共享目錄| HD2
-    TB -->|掛載目錄對應| HD2
-    
-    CW -.->|僅能存取| Ext[Anthropic API / Git Remote]
-```
-
-- **單一控制閥 (task-broker)**：`task-broker` 持有 Podman Socket，為唯一能夠控制 Worker 的通道。它負責限制任務類型、執行時長與預算上限。
-- **網路沙盒隔離 (workernet)**：`claude-code-worker` 與 Hermes Gateway 隔離在不同網段，不開放任何連入埠（ports）。Worker 僅能透過單獨的 `workernet` 與外界通訊。
-- **檔案系統最小化存取**：Worker 無法存取主機的家目錄或 `~/.hermes` 設定，僅能讀寫掛載的 `~/hermes-tasks` 工作目錄，確保主機機密資訊不外洩。
-
-詳細設定與建置步驟請參考 [DEPLOY.md](file:///home/icekimo/gitWrk/hermes-podman/DEPLOY.md)。
-
-## 環境需求
-
-- [Podman](https://podman.io/)
-- [podman-compose](https://github.com/containers/podman-compose)
+| | 容器（舊） | VM（現在） |
+|---|---|---|
+| agent 裝系統套件 | 要改 Dockerfile 重 build | 直接 `sudo apt install` |
+| sudo | 要硬塞 sudoers 才有 | 原生具備，且爆炸半徑限於 VM |
+| systemd | 沒有 | 完整，`hermes gateway install` 直接可用 |
+| 檔案權限 | `keep-id` / uid 對映地獄 | 一般 Linux 使用者，沒這問題 |
+| 弄壞了怎麼辦 | 重建容器、資料另外救 | `./vm/snapshot.sh revert clean` |
+| 升級 | 重拉 image | `hermes update`（官方管道） |
 
 ## 快速開始
 
 ```bash
-# 首次啟動前，需建置自訂 Worker/Broker 映像檔
-./podman-compose build
+# 0. 準備 LINE 憑證（沿用舊的即可，格式沒變）
+cp .env.example .env && $EDITOR .env
 
-# 啟動所有服務
-./podman-compose up -d
+# 1. 檢視/調整資源配置
+$EDITOR vm.conf
 
-# 停止所有服務
-./podman-compose down
+# 2. 建立 VM（不需要 sudo，磁碟走 libvirtd 的 storage pool API）
+./vm/create-vm.sh
 
-# 重新啟動單一服務
-./podman-compose restart hermes
+# 3. 把舊容器留下的 ~/.hermes 狀態搬進去（config、skills、sessions）
+./vm/migrate-data.sh
 
-# 查看日誌
-./podman-compose logs -f hermes
-./podman-compose logs -f task-broker
-
-# 拉取最新映像檔
-./podman-compose pull
+# 4. 照一張乾淨快照，之後才讓 agent 放手做事
+./vm/snapshot.sh create clean "首次安裝完成"
 ```
 
-> **注意**：請使用專案內的 `./podman-compose` 包裝腳本，而非系統的 `podman-compose`。
-> 該腳本會自動帶入 `--in-pod 0` 參數，以確保 `userns_mode: keep-id` 正常運作。
+完成後 `./vm/create-vm.sh` 會印出 VM 的 LAN IP 與三個服務網址。
 
-## 資料目錄
+## 預設配置
 
-所有執行期資料與設定存放於主機：
+`vm.conf` 的預設值是照這台機器的實測條件挑的（Ryzen 7 5825U 8C/16T、62 GB RAM、
+`/datapool` 681 GB 可用、已存在 `br0` 橋接）：
 
-### Hermes 相關
-| 路徑 | 內容 |
-|------|------|
-| `~/.hermes/config.yaml` | 主要設定檔 |
-| `~/.hermes/.env` | 機密資訊 / API 金鑰 |
-| `~/.hermes/logs/` | 閘道與代理日誌 |
-| `~/.hermes/skills/` | 已安裝的技能 |
-| `~/.hermes/plugins/` | 已安裝的外掛 |
+| 項目 | 值 | 說明 |
+|---|---|---|
+| OS | Debian 13 trixie genericcloud | 與 Hermes 官方 image 底層一致（Debian 13 / Python 3.13） |
+| vCPU | 4 | Hermes 是 API/IO bound，不吃算力 |
+| RAM | 8 GB | 要跑 browser/playwright 類 skill 建議調到 16 GB |
+| 磁碟 | 64 GB qcow2 | 精簡配置，實際只佔用寫入量 |
+| 網路 | `host-bridge`（→ `br0`） | VM 直接拿 LAN IP，LINE webhook 打得進來 |
+| 儲存 | libvirt pool `default` | 磁碟由 libvirtd 建立，權限它自己處理，腳本免 sudo |
+| GPU | 不需要 | 推論走遠端 API（`config.yaml` 的 `provider`） |
 
-### Claude Code Worker 相關
-| 路徑 | 內容 |
-|------|------|
-| `~/.claude-worker/` | Claude Worker 的獨立家目錄（包含憑證、狀態與 CLAUDE.md 設定） |
-| `~/hermes-tasks/` | 任務工作目錄（主機與 Worker 的唯一共享儲存區） |
+## 目錄結構
 
-## 安全說明
+```
+vm.conf                        佈署參數（唯一要改的設定檔）
+.env                           LINE 憑證（不進 git，由 cloud-init 注入 VM）
+vm/
+  create-vm.sh                 建 VM + 佈署 + 清掉含憑證的 seed ISO
+  destroy-vm.sh                砍 VM 與磁碟
+  migrate-data.sh              主機 ↔ VM 之間搬 ~/.hermes
+  snapshot.sh                  快照 create / list / revert / delete
+  ssh.sh                       進 VM 或在 VM 上跑指令
+  lib.sh                       共用函式
+  cloud-init/
+    user-data.tpl              cloud-init 樣板（@@佔位符@@ 由 create-vm.sh 填）
+    meta-data.tpl
+  files/
+    provision.sh               VM 內的佈署腳本（可重複執行）
+    hermes-dashboard.service   dashboard 的 systemd user unit
+legacy-podman/                 舊的 Podman Compose 佈署，保留備查
+```
 
-- `userns_mode: keep-id`：容器以主機使用者身份（UID 1000）執行，無需 root 權限。
-- `user: "1000:1000"`：明確指定容器內的執行使用者。
-- Volume 掛載加上 `:Z` SELinux 標籤，適用於啟用 SELinux 的系統。
-- 容器不具備特權模式（無 `privileged: true`）。
-- **容器與網路隔離防線**：
-  - `claude-code-worker` 沒有對外暴露任何 Port，且位於獨立的 `workernet`，與 `hermesnet` 隔絕，無法被 Hermes 代理直接以網路橫向存取。
-  - 僅 `task-broker` 容器掛載了 rootless podman 的 Socket，並作為唯一的代理閘道，透過 `podman exec` 對 Worker 下達指令。
-  - 建議於主機端限制 `workernet` 的出口流量（Egress），僅允許存取 Anthropic API 與 Git Host（詳細做法請參見 [DEPLOY.md](file:///home/icekimo/gitWrk/hermes-podman/DEPLOY.md)）。
-- **檔案權限與沙盒邊界**：
-  - Worker 僅掛載了指定的 `~/hermes-tasks` 作為專案工作目錄，其餘主機敏感目錄對 Worker 均為不可見，保護主機檔案安全。
+## 服務
 
+VM 內以 `hermes` 使用者的 **systemd user unit** 執行，`loginctl enable-linger` 確保
+開機即啟動、不需登入。
+
+| 服務 | Unit | 埠 | 來源 |
+|---|---|---|---|
+| Gateway | `hermes-gateway.service` | 8642 | Hermes 內建（`hermes gateway install` 產生） |
+| LINE webhook | 同上 | 8646 | Gateway 的 LINE adapter |
+| Dashboard | `hermes-dashboard.service` | 9119（**僅 127.0.0.1**） | 本專案提供（Hermes 沒內建） |
+
+```bash
+./vm/ssh.sh 'systemctl --user status hermes-gateway'
+./vm/ssh.sh 'journalctl --user -u hermes-gateway -f'
+./vm/ssh.sh 'systemctl --user restart hermes-dashboard'
+```
+
+### Dashboard 只綁 127.0.0.1
+
+Hermes 0.20 起，非 loopback 綁定會啟動認證閘門，沒有註冊 auth provider 就**拒絕啟動**
+（`--insecure` 已標為 DEPRECATED / NO-OP，不再能繞過）。要從別台機器看：
+
+```bash
+ssh -N -L 9119:127.0.0.1:9119 hermes@<VM_IP>   # 然後開 http://localhost:9119
+```
+
+真的要對外綁，先設好認證再改 `vm/files/hermes-dashboard.service` 的 `--host`：
+`config.yaml` 的 `dashboard.basic_auth.username` + `password_hash`，或 `hermes dashboard register`。
+
+> Gateway 不監聽 8642 —— 那是舊 compose 時代的埠。0.20 的 gateway 只開各平台
+> adapter 的埠（LINE 是 8646）。
+
+## 日常操作
+
+```bash
+virsh -c qemu:///system start hermes       # 開機
+virsh -c qemu:///system shutdown hermes    # 關機
+./vm/ssh.sh                                # 進去
+./vm/ssh.sh 'hermes update'                # 升級 Hermes 本體
+
+./vm/snapshot.sh create before-experiment  # 動大手術前先照一張
+./vm/snapshot.sh list
+./vm/snapshot.sh revert before-experiment  # 回滾
+```
+
+## 憑證處理
+
+`.env` 的內容由 `create-vm.sh` 以 base64 塞進 cloud-init seed ISO，開機後
+`provision.sh` 會把它寫成 `~hermes/.hermes/.env`（`0600`），然後：
+
+1. `shred` 掉 VM 內 `/root/hermes-provision/` 的那份副本
+2. 主機端退掉並刪除 seed ISO（`--keep-seed` 可保留供除錯，但裡面是明文）
+3. `shred` 掉主機 `vm/.build/user-data`
+
+`vm/.build/` 與 `vm/.cache/` 都在 `.gitignore` 裡。
+
+## LINE adapter 修正
+
+舊版 Hermes（0.14.0）的 `plugins/platforms/line/adapter.py` 把 `home_channel`
+設成字串，但 `gateway/config.py` 要的是 `{"chat_id": "..."}`，不修就接不上 HomeChannel。
+`provision.sh` 會**條件式**套用這個修正 —— 偵測不到舊寫法就跳過，
+所以上游修好之後不會重複動它。
+
+> 順帶一提：舊的容器 image 停在 **0.14.0**，PyPI 上的 `hermes-agent` 已經到 **0.19.0**。
+> 原生安裝走 git checkout，`hermes update` 就能跟上。
+
+## 疑難排解
+
+```bash
+# 開機/佈署卡住 —— 看序列主控台
+virsh -c qemu:///system console hermes        # 離開按 Ctrl+]
+
+# 佈署紀錄
+./vm/ssh.sh 'sudo tail -100 /var/log/hermes-provision.log'
+./vm/ssh.sh 'sudo cloud-init status --long'
+
+# 重跑佈署（provision.sh 設計成可重複執行）
+./vm/ssh.sh 'sudo /root/hermes-provision/provision.sh'
+
+# 取不到 IP：qemu-guest-agent 還沒起來，或 VM 還在開機
+virsh -c qemu:///system domifaddr hermes --source agent
+
+# VM 在跑但完全沒動靜（TX 0 封包、磁碟只讀不寫）→ 開機迴圈
+virsh -c qemu:///system domifstat hermes vnet1    # tx_packets 是 0 就是沒開起來
+virsh -c qemu:///system domblkstat hermes vda     # wr_req 是 0 就是根本沒開機成功
+```
+
+### 開機迴圈：一定要用 UEFI
+
+Debian 13 genericcloud 映像在傳統 BIOS（SeaBIOS）下會卡在 GRUB 無限迴圈 ——
+每秒重印一次 `Booting \`Debian GNU/Linux'`，讀了 2 GB 卻寫不進任何東西。
+`create-vm.sh` 已固定帶 `--boot uefi`。手動修既有的 VM：
+
+```bash
+virsh -c qemu:///system destroy hermes
+virt-xml --connect qemu:///system hermes --edit --boot uefi   # 注意 --connect
+virsh -c qemu:///system start hermes
+```
+
+## 舊的 Podman 佈署
+
+`legacy-podman/` 保留了完整的 compose 設定，包含 `task-broker` + `claude-code-worker`
+的委派架構。要回頭用的話：
+
+```bash
+cd legacy-podman && ./podman-compose up -d
+```
+
+注意該架構的 broker 是靠 `podman exec` 進 worker 容器 —— 在 VM 模式下這一層通常
+不需要了，agent 直接在 VM 裡跑就好。
