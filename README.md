@@ -66,6 +66,7 @@ vm/
   migrate-data.sh              主機 ↔ VM 之間搬 ~/.hermes
   snapshot.sh                  快照 create / list / revert / delete
   ssh.sh                       進 VM 或在 VM 上跑指令
+  dashboard-tunnel.sh          開 dashboard 的 SSH 通道（它只綁 VM 內的 loopback）
   lib.sh                       共用函式
   cloud-init/
     user-data.tpl              cloud-init 樣板（@@佔位符@@ 由 create-vm.sh 填）
@@ -73,6 +74,7 @@ vm/
   files/
     provision.sh               VM 內的佈署腳本（可重複執行）
     hermes-dashboard.service   dashboard 的 systemd user unit
+    hermes-chrome-cdp.service  常駐 headless Chrome（CDP 給瀏覽器工具用）
 legacy-podman/                 舊的 Podman Compose 佈署，保留備查
 ```
 
@@ -86,6 +88,7 @@ VM 內以 `hermes` 使用者的 **systemd user unit** 執行，`loginctl enable-
 | Gateway | `hermes-gateway.service` | 8642 | Hermes 內建（`hermes gateway install` 產生） |
 | LINE webhook | 同上 | 8646 | Gateway 的 LINE adapter |
 | Dashboard | `hermes-dashboard.service` | 9119（**僅 127.0.0.1**） | 本專案提供（Hermes 沒內建） |
+| Chrome CDP | `hermes-chrome-cdp.service` | 9222（**僅 127.0.0.1**） | 本專案提供（瀏覽器工具的前提） |
 
 ```bash
 ./vm/ssh.sh 'systemctl --user status hermes-gateway'
@@ -96,14 +99,47 @@ VM 內以 `hermes` 使用者的 **systemd user unit** 執行，`loginctl enable-
 ### Dashboard 只綁 127.0.0.1
 
 Hermes 0.20 起，非 loopback 綁定會啟動認證閘門，沒有註冊 auth provider 就**拒絕啟動**
-（`--insecure` 已標為 DEPRECATED / NO-OP，不再能繞過）。要從別台機器看：
+（`--insecure` 已標為 DEPRECATED / NO-OP，不再能繞過）。
+
+所以 `http://<VM_IP>:9119/` **連不上是正常的** —— 那個位址上沒有任何 process 在聽。
+要從別台機器看，開通道：
 
 ```bash
-ssh -N -L 9119:127.0.0.1:9119 hermes@<VM_IP>   # 然後開 http://localhost:9119
+./vm/dashboard-tunnel.sh          # 然後開 http://127.0.0.1:9119/
+./vm/dashboard-tunnel.sh 9200     # 本機 9119 被占用時，改用本機 9200
 ```
 
 真的要對外綁，先設好認證再改 `vm/files/hermes-dashboard.service` 的 `--host`：
 `config.yaml` 的 `dashboard.basic_auth.username` + `password_hash`，或 `hermes dashboard register`。
+
+### 瀏覽器工具需要常駐的 Chrome
+
+Hermes 的 `browser_exec`（Browser Use 後端）不會自己開瀏覽器 —— 它透過 CDP 附掛到一個
+**已在執行**的 Chrome。這台 VM 沒有 X/Wayland，harness 自行啟動一定失敗：
+
+```
+browser-harness: fatal: chrome-not-running: no supported Chromium-family
+  browser is running -- start Chrome, then retry
+```
+
+所以 `hermes-chrome-cdp.service` 常駐一個 headless Chrome，`browser.cdp_url` 指過去：
+
+```bash
+./vm/ssh.sh 'systemctl --user status hermes-chrome-cdp'
+./vm/ssh.sh 'curl -s http://127.0.0.1:9222/json/version'   # 確認 CDP 活著
+```
+
+`cdp_url` 存的是 `http://127.0.0.1:9222` 而不是 `ws://…`：Chrome 重啟後 ws 端點的 GUID
+會變，存 http 才能每次重新探索。
+
+**CDP 沒有任何認證** —— 連得到那個埠就等於完全控制瀏覽器（讀 cookie、用已登入的
+session、透過 `file://` 讀本機檔案），所以它只綁 127.0.0.1，不要對外開。
+
+不想用 Browser Use、想回到內建的 `browser_*`（走 agent-browser，一樣可用）：
+
+```bash
+./vm/ssh.sh 'hermes config set browser.backend off'
+```
 
 > Gateway 不監聽 8642 —— 那是舊 compose 時代的埠。0.20 的 gateway 只開各平台
 > adapter 的埠（LINE 是 8646）。
