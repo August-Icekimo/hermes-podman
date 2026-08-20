@@ -1,5 +1,7 @@
 # 機密
 .env
+.env.bak.*
+.env.*.bak
 worker/.env
 legacy-podman/worker/.env
 
