@@ -57,6 +57,12 @@ write_files:
     permissions: '0644'
     owner: root:root
 
+  - path: /root/hermes-provision/hermes-chrome-cdp.service
+    encoding: b64
+    content: @@CHROME_CDP_UNIT_B64@@
+    permissions: '0644'
+    owner: root:root
+
   - path: /root/hermes-provision/provision.env
     permissions: '0644'
     owner: root:root

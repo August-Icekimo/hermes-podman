@@ -118,6 +118,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+log "5.5/7 瀏覽器工具（Chrome + CDP 服務 + Browser Use 後端）"
+# 這台 VM 沒有 X/Wayland。browser-use 的 harness 不會自己開瀏覽器，它是透過 CDP
+# 附掛到一個「已在執行的」Chrome；無顯示環境下它自行啟動會失敗並吐：
+#   browser-harness: fatal: chrome-not-running: no supported Chromium-family
+#   browser is running -- start Chrome, then retry
+# 而 Hermes 的 browser.backend 預設是空字串，只要偵測到 browser-use CLI 就會啟用
+# Browser Use 模式，同時把整組內建 browser_* 工具從模型的工具清單移除
+# （browser_tool.check_browser_requirements() 第一道就 return False）。
+# 兩者相加的結果：agent 沒有任何可用的瀏覽器工具，只好改用 terminal 去 shell
+# 呼叫 google-chrome，然後 command not found。
+#
+# 解法是常駐一個 headless Chrome 提供 CDP 端點，再用 browser.cdp_url 指過去。
+if ! command -v google-chrome >/dev/null 2>&1; then
+    chrome_deb="$(mktemp -d)/chrome.deb"
+    if curl -fsSL -o "$chrome_deb" \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb; then
+        apt-get install -y -qq "$chrome_deb" || warn "google-chrome 安裝失敗"
+    else
+        warn "下載 google-chrome 失敗，瀏覽器工具將無法使用"
+    fi
+    rm -rf "$(dirname "$chrome_deb")"
+fi
+command -v google-chrome >/dev/null 2>&1 && echo "google-chrome: $(google-chrome --version 2>/dev/null)"
+
+# 這裡是第一個往 user unit 目錄寫東西的步驟，目錄不一定存在（步驟 7 也會建，
+# install -d 重複執行無妨）
+install -d -o "$HERMES_USER" -g "$HERMES_USER" -m 0755 "$USER_HOME/.config/systemd/user"
+install -o "$HERMES_USER" -g "$HERMES_USER" -m 0644 \
+    "$PROV_DIR/hermes-chrome-cdp.service" \
+    "$USER_HOME/.config/systemd/user/hermes-chrome-cdp.service"
+as_hermes systemctl --user daemon-reload
+as_hermes systemctl --user enable --now hermes-chrome-cdp.service \
+    || warn "hermes-chrome-cdp 啟動失敗，瀏覽器工具會拿不到 CDP 端點"
+
+# cdp_url 一定要存 http:// 而不是 ws://：Chrome 每次重啟 ws 端點的 GUID 都會變，
+# 存 http 才會讓 Hermes 每次連線前重新透過 /json/version 探索。
+# hermes config set 是 idempotent 的，重跑只會把同樣的值寫回去。
+as_hermes "$HERMES_BIN" config set browser.cdp_url http://127.0.0.1:9222 \
+    || warn "browser.cdp_url 設定失敗"
+as_hermes "$HERMES_BIN" config set browser.backend browser-use \
+    || warn "browser.backend 設定失敗"
+
+# ---------------------------------------------------------------------------
 log "6/7 安裝 gateway 服務（Hermes 自帶的 systemd 整合）"
 # 以 hermes 身分執行 => 產生使用者層級的 hermes-gateway.service
 as_hermes "$HERMES_BIN" gateway install || warn "gateway install 回報失敗"
@@ -146,7 +189,7 @@ cat <<EOF
  程式碼   : $INSTALL_DIR   （hermes update 可原地升級）
  Gateway  : http://$IP:8642
  LINE hook: http://$IP:8646
- Dashboard: http://$IP:9119
+ Dashboard: 僅 127.0.0.1:9119（不對外，主機端跑 ./vm/dashboard-tunnel.sh）
 
  服務狀態：
    sudo -u $HERMES_USER XDG_RUNTIME_DIR=/run/user/$USER_UID systemctl --user status hermes-gateway

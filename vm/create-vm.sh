@@ -81,6 +81,7 @@ sed -e "s|@@HOSTNAME@@|$VM_HOSTNAME|g" \
     -e "s|@@ENV_B64@@|$(b64 "$REPO_ROOT/.env")|g" \
     -e "s|@@PROVISION_B64@@|$(b64 "$VM_DIR/files/provision.sh")|g" \
     -e "s|@@DASHBOARD_UNIT_B64@@|$(b64 "$VM_DIR/files/hermes-dashboard.service")|g" \
+    -e "s|@@CHROME_CDP_UNIT_B64@@|$(b64 "$VM_DIR/files/hermes-chrome-cdp.service")|g" \
     -e "s|@@HERMES_INSTALL_ARGS@@|$HERMES_INSTALL_ARGS|g" \
     "$VM_DIR/cloud-init/user-data.tpl" \
   | sed -e "/@@SSH_AUTHORIZED_KEYS@@/{r $KEYS_YAML" -e "d}" > "$BUILD_DIR/user-data"
