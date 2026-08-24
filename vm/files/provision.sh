@@ -17,6 +17,7 @@ fi
 
 HERMES_USER="${HERMES_USER:-hermes}"
 HERMES_INSTALL_ARGS="${HERMES_INSTALL_ARGS:---non-interactive --skip-setup}"
+VM_TIMEZONE="${VM_TIMEZONE:-}"          # 留空 = 不動系統時區（cloud image 預設 UTC）
 
 USER_HOME="$(getent passwd "$HERMES_USER" | cut -d: -f6)"
 USER_UID="$(id -u "$HERMES_USER")"
@@ -60,6 +61,22 @@ if systemctl list-unit-files qemu-guest-agent.service >/dev/null 2>&1; then
         || warn "qemu-guest-agent 啟動失敗，主機端將取不到 IP"
 else
     warn "沒有 qemu-guest-agent.service"
+fi
+
+# ---------------------------------------------------------------------------
+log "1.6/7 設定系統時區"
+# 時區只影響顯示（journald、systemd timer、agent 看到的「現在幾點」），
+# 底層時間仍是 UTC，RTC 也保持 UTC —— 不要碰 `timedatectl set-local-rtc`。
+if [ -z "$VM_TIMEZONE" ]; then
+    echo "VM_TIMEZONE 未設定，維持現有時區：$(cat /etc/timezone 2>/dev/null || echo 未知)"
+elif [ ! -f "/usr/share/zoneinfo/$VM_TIMEZONE" ]; then
+    warn "沒有 /usr/share/zoneinfo/$VM_TIMEZONE，時區維持不變"
+elif [ "$(timedatectl show -p Timezone --value 2>/dev/null)" = "$VM_TIMEZONE" ]; then
+    echo "時區已是 $VM_TIMEZONE，略過"
+else
+    timedatectl set-timezone "$VM_TIMEZONE" \
+        && echo "時區設為 $VM_TIMEZONE（$(date +'%Y-%m-%d %H:%M:%S %Z')）" \
+        || warn "時區設定失敗，維持 $(cat /etc/timezone 2>/dev/null || echo 未知)"
 fi
 
 # ---------------------------------------------------------------------------

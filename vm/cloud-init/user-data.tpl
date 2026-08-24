@@ -72,6 +72,7 @@ write_files:
       # 在 set -e 底下會讓 provision.sh 直接結束。
       HERMES_USER="@@VM_USER@@"
       HERMES_INSTALL_ARGS="@@HERMES_INSTALL_ARGS@@"
+      VM_TIMEZONE="@@VM_TIMEZONE@@"
 
 runcmd:
   - [ bash, -lc, "/root/hermes-provision/provision.sh 2>&1 | tee -a /var/log/hermes-provision.log" ]
