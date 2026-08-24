@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   NoCloud seed ISO。
 - **VM 內佈署**（`vm/files/provision.sh`）：以 root 由 cloud-init `runcmd` 觸發，
   裝系統相依套件 → 跑 Hermes 官方 `install.sh` → 佈署 `.env` → 條件式套用 LINE 修正
-  → 裝 gateway/dashboard 的 systemd user unit。
+  → 裝 Chrome + CDP 服務 → 裝 gateway/dashboard 的 systemd user unit。
 
 ## 關鍵約束
 
@@ -47,8 +47,24 @@ seed ISO、shred 掉 `vm/.build/user-data`。改動這條流程時要維持這�
 （virt-install 沒有 `nvram.format` 選項）。
 
 **Dashboard 只能綁 127.0.0.1。** Hermes 0.20 起非 loopback 綁定必須有 auth provider，
-`--insecure` 已是 NO-OP。要遠端看就開 SSH 通道，不要為了方便把它改成 0.0.0.0 ——
-它會直接拒絕啟動並進入崩潰迴圈。
+`--insecure` 已是 NO-OP。要遠端看就跑 `./vm/dashboard-tunnel.sh` 開 SSH 通道，不要為了
+方便把它改成 0.0.0.0 —— 它會直接拒絕啟動並進入崩潰迴圈。連 `http://<VM_IP>:9119/`
+被 refuse 是預期行為，不是故障。
+
+**瀏覽器工具靠一個常駐的 headless Chrome。** browser-use 的 harness 不會自己開瀏覽器，
+它是透過 CDP 附掛到一個**已在執行**的 Chrome；這台 VM 沒有 X/Wayland，它自行啟動會失敗
+並吐 `chrome-not-running`。而 `browser.backend` 預設是空字串，只要偵測到 browser-use CLI
+就會啟用 Browser Use 模式，同時讓 `check_browser_requirements()` 在第一道就 `return False`，
+把整組內建 `browser_*` 從模型的工具清單移除 —— agent 於是改用 terminal 去 shell 呼叫
+`google-chrome`。所以本專案提供 `hermes-chrome-cdp.service`（headless Chrome，
+CDP 在 127.0.0.1:9222），並設定 `browser.cdp_url` + `browser.backend: browser-use`。
+
+- **`cdp_url` 一定要存 `http://` 不能存 `ws://`**：Chrome 每次重啟 ws 端點的 GUID 都會變，
+  存 http 才會讓 Hermes 每次連線前重新透過 `/json/version` 探索（已實測重啟後自動接回）。
+- **CDP 埠只能綁 127.0.0.1**。CDP 沒有任何認證，連得到就等於完全控制瀏覽器 ——
+  讀 cookie、拿已登入 session、透過 `file://` 讀本機檔案。
+- 不要加 `--no-sandbox`：這台 VM 的 Chrome sandbox 實測正常。
+- 想改回內建的 `browser_*`（走 agent-browser，也是可用的）就設 `browser.backend: off`。
 
 **橋接網路沒有 libvirt DHCP lease。** 取 VM 的 IP 一律透過 qemu-guest-agent
 （`vm_ip()` 用 `virsh domifaddr --source agent`），不要改用 `--source lease`。
@@ -60,6 +76,7 @@ seed ISO、shred 掉 `vm/.build/user-data`。改動這條流程時要維持這�
 ./vm/create-vm.sh --render-only      # 只產生 seed，不碰 libvirt（改樣板時用這個測）
 ./vm/create-vm.sh --no-wait          # 不等 cloud-init
 ./vm/ssh.sh 'systemctl --user status hermes-gateway'
+./vm/dashboard-tunnel.sh [本機埠]     # dashboard 只綁 VM 內 loopback，遠端看要走通道
 ./vm/migrate-data.sh [--pull] [--dry-run]
 ./vm/snapshot.sh create|list|revert|delete <名稱>
 ./vm/destroy-vm.sh
@@ -97,5 +114,6 @@ virsh -c qemu:///system console hermes    # 序列主控台，離開按 Ctrl+]
 | 指令 | `/home/hermes/.local/bin/hermes` |
 | Gateway | `hermes-gateway.service`（user unit，Hermes 自己產生），8642 / 8646 |
 | Dashboard | `hermes-dashboard.service`（user unit，本專案提供），9119 僅 127.0.0.1 |
+| Chrome CDP | `hermes-chrome-cdp.service`（user unit，本專案提供），9222 僅 127.0.0.1 |
 
 systemd user unit 靠 `loginctl enable-linger hermes` 才會開機自啟。

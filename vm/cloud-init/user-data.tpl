@@ -57,6 +57,12 @@ write_files:
     permissions: '0644'
     owner: root:root
 
+  - path: /root/hermes-provision/hermes-chrome-cdp.service
+    encoding: b64
+    content: @@CHROME_CDP_UNIT_B64@@
+    permissions: '0644'
+    owner: root:root
+
   - path: /root/hermes-provision/provision.env
     permissions: '0644'
     owner: root:root
@@ -66,6 +72,7 @@ write_files:
       # 在 set -e 底下會讓 provision.sh 直接結束。
       HERMES_USER="@@VM_USER@@"
       HERMES_INSTALL_ARGS="@@HERMES_INSTALL_ARGS@@"
+      VM_TIMEZONE="@@VM_TIMEZONE@@"
 
 runcmd:
   - [ bash, -lc, "/root/hermes-provision/provision.sh 2>&1 | tee -a /var/log/hermes-provision.log" ]

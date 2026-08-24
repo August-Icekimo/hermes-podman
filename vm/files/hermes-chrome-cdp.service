@@ -1,0 +1,50 @@
+[Unit]
+Description=Headless Chrome with CDP endpoint (for Hermes Browser Use backend)
+After=network-online.target
+Wants=network-online.target
+# 設定錯誤時要能自己停下來，不要每 5 秒重啟到天荒地老
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# 為什麼需要這個服務：
+# browser-use 的 harness 不會自己開瀏覽器，它是透過 CDP「附掛到一個已在執行的
+# Chrome」。這台 VM 沒有 X/Wayland，harness 自行啟動會失敗並吐：
+#   browser-harness: fatal: chrome-not-running: no supported Chromium-family
+#   browser is running -- start Chrome, then retry
+# 所以由 systemd 常駐一個 headless Chrome，再用 config.yaml 的 browser.cdp_url
+# 把 harness 指過來。
+#
+# --remote-debugging-address=127.0.0.1 是安全要求，不是保守：
+# CDP 沒有任何認證，能連到這個埠就等於完全控制瀏覽器 —— 讀 cookie、拿已登入
+# session、透過 file:// 讀本機檔案。絕對不要綁 0.0.0.0。
+#
+# 不加 --no-sandbox：這台 VM 的 Chrome sandbox 實測正常（headless 直接跑
+# --dump-dom 會成功），沒有理由關掉它。
+#
+# user-data-dir 放在 HERMES_HOME 底下而不是 /tmp，這樣登入狀態能跨重啟保留，
+# 也不會被 systemd 的 PrivateTmp/tmpfiles 清掉。
+ExecStart=/usr/bin/google-chrome \
+    --headless=new \
+    --remote-debugging-port=9222 \
+    --remote-debugging-address=127.0.0.1 \
+    --user-data-dir=%h/.hermes/cache/chrome-cdp \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-gpu \
+    --disable-dev-shm-usage \
+    --disable-background-networking \
+    --disable-component-update \
+    --window-size=1280,720
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
