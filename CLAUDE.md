@@ -53,18 +53,21 @@ seed ISO、shred 掉 `vm/.build/user-data`。改動這條流程時要維持這�
 
 **瀏覽器工具靠一個常駐的 headless Chrome。** browser-use 的 harness 不會自己開瀏覽器，
 它是透過 CDP 附掛到一個**已在執行**的 Chrome；這台 VM 沒有 X/Wayland，它自行啟動會失敗
-並吐 `chrome-not-running`。而 `browser.backend` 預設是空字串，只要偵測到 browser-use CLI
-就會啟用 Browser Use 模式，同時讓 `check_browser_requirements()` 在第一道就 `return False`，
-把整組內建 `browser_*` 從模型的工具清單移除 —— agent 於是改用 terminal 去 shell 呼叫
-`google-chrome`。所以本專案提供 `hermes-chrome-cdp.service`（headless Chrome，
-CDP 在 127.0.0.1:9222），並設定 `browser.cdp_url` + `browser.backend: browser-use`。
+並吐 `chrome-not-running`。Hermes 0.22（config v52）起內建 `browser_*` 與 agent-browser
+已移除，`browser_exec`（Browser Use 模式）是唯一的瀏覽器工具，`browser.backend` 這個鍵也被
+migration 刪掉 —— 沒有 CDP 端點時 agent 就只能改用 terminal 去 shell 呼叫 `google-chrome`。
+所以本專案提供 `hermes-chrome-cdp.service`（headless Chrome，CDP 在 127.0.0.1:9222），
+並設定 `browser.cdp_url`。不要再設 `browser.backend`，那是已廢除的鍵。
 
 - **`cdp_url` 一定要存 `http://` 不能存 `ws://`**：Chrome 每次重啟 ws 端點的 GUID 都會變，
   存 http 才會讓 Hermes 每次連線前重新透過 `/json/version` 探索（已實測重啟後自動接回）。
 - **CDP 埠只能綁 127.0.0.1**。CDP 沒有任何認證，連得到就等於完全控制瀏覽器 ——
   讀 cookie、拿已登入 session、透過 `file://` 讀本機檔案。
 - 不要加 `--no-sandbox`：這台 VM 的 Chrome sandbox 實測正常。
-- 想改回內建的 `browser_*`（走 agent-browser，也是可用的）就設 `browser.backend: off`。
+- 0.22 的 `hermes update` 也會在 `~/.hermes/tools/` 裝一份自帶的 chromium，但 `cdp_url`
+  優先，實際用的仍是本專案的 CDP Chrome。要關掉瀏覽器就在 `hermes tools` 停用 `browser` toolset。
+- Hermes 0.22 起自帶 Python / Node 執行環境（`~/.hermes/tools/`），不用系統的；
+  安全更新跟著 `hermes update` 走，不靠 apt。
 
 **橋接網路沒有 libvirt DHCP lease。** 取 VM 的 IP 一律透過 qemu-guest-agent
 （`vm_ip()` 用 `virsh domifaddr --source agent`），不要改用 `--source lease`。
