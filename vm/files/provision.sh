@@ -140,11 +140,8 @@ log "5.5/7 瀏覽器工具（Chrome + CDP 服務 + Browser Use 後端）"
 # 附掛到一個「已在執行的」Chrome；無顯示環境下它自行啟動會失敗並吐：
 #   browser-harness: fatal: chrome-not-running: no supported Chromium-family
 #   browser is running -- start Chrome, then retry
-# 而 Hermes 的 browser.backend 預設是空字串，只要偵測到 browser-use CLI 就會啟用
-# Browser Use 模式，同時把整組內建 browser_* 工具從模型的工具清單移除
-# （browser_tool.check_browser_requirements() 第一道就 return False）。
-# 兩者相加的結果：agent 沒有任何可用的瀏覽器工具，只好改用 terminal 去 shell
-# 呼叫 google-chrome，然後 command not found。
+# Hermes 0.22 起 browser_exec（Browser Use 模式）是唯一的瀏覽器工具，沒有 CDP 端點
+# 可附掛時 agent 就沒有可用的瀏覽器，只好改用 terminal 去 shell 呼叫 google-chrome。
 #
 # 解法是常駐一個 headless Chrome 提供 CDP 端點，再用 browser.cdp_url 指過去。
 if ! command -v google-chrome >/dev/null 2>&1; then
@@ -172,10 +169,10 @@ as_hermes systemctl --user enable --now hermes-chrome-cdp.service \
 # cdp_url 一定要存 http:// 而不是 ws://：Chrome 每次重啟 ws 端點的 GUID 都會變，
 # 存 http 才會讓 Hermes 每次連線前重新透過 /json/version 探索。
 # hermes config set 是 idempotent 的，重跑只會把同樣的值寫回去。
+# browser.backend 不用設：Hermes 0.22（config v52）拿掉了內建 browser_* 與
+# agent-browser，browser_exec（Browser Use 模式）是唯一的瀏覽器，這個鍵已被移除。
 as_hermes "$HERMES_BIN" config set browser.cdp_url http://127.0.0.1:9222 \
     || warn "browser.cdp_url 設定失敗"
-as_hermes "$HERMES_BIN" config set browser.backend browser-use \
-    || warn "browser.backend 設定失敗"
 
 # ---------------------------------------------------------------------------
 log "6/7 安裝 gateway 服務（Hermes 自帶的 systemd 整合）"

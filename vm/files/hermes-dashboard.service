@@ -22,6 +22,9 @@ Environment="HERMES_HOME=%h/.hermes"
 Environment="PATH=%h/.local/bin:%h/.hermes/bin:/usr/local/bin:/usr/bin:/bin"
 Restart=always
 RestartSec=5
+# exit 78 (EX_CONFIG) 是 Hermes 0.22+「永久拒絕啟動」的訊號（例如非 loopback 又沒 auth），
+# 重啟也沒用，讓它停在 failed 而不是進崩潰迴圈。`hermes update` 會檢查這行。
+RestartPreventExitStatus=78
 KillMode=mixed
 KillSignal=SIGTERM
 StandardOutput=journal
